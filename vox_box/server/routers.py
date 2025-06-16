@@ -1,5 +1,8 @@
 import asyncio
 import functools
+import tempfile
+import os
+import torchaudio
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
@@ -11,7 +14,21 @@ from concurrent.futures import ThreadPoolExecutor
 
 router = APIRouter()
 
-executor = ThreadPoolExecutor()
+executor = ThreadPoolExecutor(max_workers=1)
+
+
+def load_wav(wav, target_sr):
+    speech, sample_rate = torchaudio.load(wav, backend="soundfile")
+    speech = speech.mean(dim=0, keepdim=True)
+    if sample_rate != target_sr:
+        assert (
+            sample_rate > target_sr
+        ), "wav sample rate {} must be greater than {}".format(sample_rate, target_sr)
+        speech = torchaudio.transforms.Resample(
+            orig_freq=sample_rate, new_freq=target_sr
+        )(speech)
+    return speech
+
 
 ALLOWED_SPEECH_OUTPUT_AUDIO_TYPES = {
     "mp3",
@@ -72,6 +89,109 @@ async def speech(request: SpeechRequest):
         return FileResponse(audio_file, media_type=media_type)
     except Exception as e:
         return HTTPException(status_code=500, detail=f"Failed to generate speech, {e}")
+
+
+class SpeechInstructRequest(BaseModel):
+    model: str
+    input: str
+    instruct_text: str
+    response_format: str = "mp3"
+    speed: float = 1.0
+
+
+@router.post("/v1/audio/speech_instruct")
+async def speech_instruct(request: Request):
+    try:
+        form = await request.form()
+        keys = form.keys()
+
+        # 检查必需的字段
+        required_fields = ["model", "input", "instruct_text", "voice"]
+        for field in required_fields:
+            if field not in keys:
+                return HTTPException(
+                    status_code=400, detail=f"Field {field} is required"
+                )
+
+        # 获取表单数据
+        input_text = form.get("input")
+        instruct_text = form.get("instruct_text")
+        response_format = form.get("response_format", "mp3")
+        speed = float(form.get("speed", 1.0))
+
+        # 获取音频文件
+        voice_file: UploadFile = form["voice"]
+        if not voice_file:
+            return HTTPException(status_code=400, detail="Voice audio file is required")
+
+        # 检查音频格式
+        file_content_type = voice_file.content_type
+        if file_content_type not in ALLOWED_TRANSCRIPTIONS_INPUT_AUDIO_FORMATS:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {file_content_type}",
+            )
+
+        # 检查输出格式
+        if response_format not in ALLOWED_SPEECH_OUTPUT_AUDIO_TYPES:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {response_format}",
+            )
+
+        # 检查速度参数
+        if speed < 0.25 or speed > 2:
+            return HTTPException(
+                status_code=400, detail="Speed must be between 0.25 and 2"
+            )
+
+        # 保存音频文件到临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            voice_audio_bytes = await voice_file.read()
+            temp_file.write(voice_audio_bytes)
+            temp_audio_path = temp_file.name
+
+        try:
+            # 使用load_wav处理音频文件
+            speech = load_wav(temp_audio_path, 16000)  # 假设目标采样率为16kHz
+
+            model_instance: TTSBackend = get_model_instance()
+            if not isinstance(model_instance, TTSBackend):
+                return HTTPException(
+                    status_code=400, detail="Model instance does not support speech API"
+                )
+
+            # 检查模型是否支持speech_instruct方法
+            if not hasattr(model_instance, "speech_instruct"):
+                return HTTPException(
+                    status_code=400, detail="Model does not support speech_instruct API"
+                )
+
+            func = functools.partial(
+                model_instance.speech_instruct,
+                input_text,
+                instruct_text,
+                speech,  # 传递处理后的speech tensor而不是原始字节
+                speed,
+                response_format,
+            )
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+
+        loop = asyncio.get_event_loop()
+        audio_file = await loop.run_in_executor(
+            executor,
+            func,
+        )
+
+        media_type = get_media_type(response_format)
+        return FileResponse(audio_file, media_type=media_type)
+    except Exception as e:
+        return HTTPException(
+            status_code=500, detail=f"Failed to generate speech_instruct, {e}"
+        )
 
 
 # ref: https://github.com/LMS-Community/slimserver/blob/public/10.0/types.conf

@@ -47,9 +47,19 @@ class CosyVoice(TTSBackend):
 
         self._parse_and_set_cuda_visible_devices()
 
+        # 检查两种可能的配置文件
         cosyvoice_yaml_path = os.path.join(self._cfg.model, "cosyvoice.yaml")
-        if os.path.exists(cosyvoice_yaml_path):
-            with open(cosyvoice_yaml_path, "r", encoding="utf-8") as f:
+        cosyvoice2_yaml_path = os.path.join(self._cfg.model, "cosyvoice2.yaml")
+
+        # 优先检查cosyvoice2.yaml，如果不存在则检查cosyvoice.yaml
+        config_path = None
+        if os.path.exists(cosyvoice2_yaml_path):
+            config_path = cosyvoice2_yaml_path
+        elif os.path.exists(cosyvoice_yaml_path):
+            config_path = cosyvoice_yaml_path
+
+        if config_path:
+            with open(config_path, "r", encoding="utf-8") as f:
                 content = f.read()
                 if re.search(r"Qwen2", content, re.IGNORECASE):
                     self._is_cosyvoice_v2 = True
@@ -133,6 +143,35 @@ class CosyVoice(TTSBackend):
 
                 output_file_path = convert(wav_file_path, reponse_format, speed)
                 return output_file_path
+
+    @log_method
+    def speech_instruct(
+        self,
+        input: str,
+        instruct_text: str,
+        speech,
+        speed: float = 1,
+        response_format: str = "mp3",
+        **kwargs,
+    ) -> str:
+        # 调用CosyVoice的inference_instruct2方法
+        model_output = self._model.inference_instruct2(input, instruct_text, speech)
+
+        # 生成输出音频文件
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
+            wav_file_path = temp_file.name
+            with wave.open(wav_file_path, "wb") as wf:
+                wf.setnchannels(1)  # single track
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(22050)  # Sample rate
+                for i in model_output:
+                    tts_audio = (
+                        (i["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
+                    )
+                    wf.writeframes(tts_audio)
+
+            output_file_path = convert(wav_file_path, response_format, speed)
+            return output_file_path
 
     def _get_voices(self) -> List[str]:
         voices = self._model.list_available_spks()

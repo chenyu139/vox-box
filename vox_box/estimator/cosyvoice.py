@@ -19,6 +19,7 @@ class CosyVoice(Estimator):
         self._cfg = cfg
         self._required_files = [
             "cosyvoice.yaml",
+            "cosyvoice2.yaml",  # 添加对新文件名的支持
         ]
 
     def model_info(self) -> Dict:
@@ -45,12 +46,10 @@ class CosyVoice(Estimator):
             return self._check_remote_model()
 
     def _check_local_model(self, base_dir: str) -> bool:
-        if all(
-            os.path.exists(os.path.join(base_dir, file))
-            for file in self._required_files
-        ):
-            return True
-
+        # 检查是否存在任一配置文件
+        for required_file in self._required_files:
+            if os.path.exists(os.path.join(base_dir, required_file)):
+                return True
         return False
 
     def _check_remote_model(self) -> bool:
