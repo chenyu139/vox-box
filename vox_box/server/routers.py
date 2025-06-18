@@ -99,6 +99,29 @@ class SpeechInstructRequest(BaseModel):
     speed: float = 1.0
 
 
+class AceStepRequest(BaseModel):
+    model: str
+    prompt: str
+    lyrics: str = ""
+    audio_duration: float = 10.0
+    infer_step: int = 50
+    guidance_scale: float = 7.5
+    scheduler_type: str = "ddim"
+    cfg_type: str = "full"
+    omega_scale: float = 1.0
+    guidance_interval: float = 1.0
+    guidance_interval_decay: float = 0.0
+    min_guidance_scale: float = 1.0
+    use_erg_tag: bool = True
+    use_erg_lyric: bool = True
+    use_erg_diffusion: bool = True
+    oss_steps: list = [0]
+    guidance_scale_text: float = 0.0
+    guidance_scale_lyric: float = 0.0
+    actual_seeds: list = [42]
+    response_format: str = "mp3"
+
+
 @router.post("/v1/audio/speech_instruct")
 async def speech_instruct(request: Request):
     try:
@@ -342,6 +365,74 @@ async def get_voice():
     return {
         "voices": model_instance.model_info().get("voices", []),
     }
+
+
+@router.post("/v1/audio/acestep")
+async def acestep_generate(request: AceStepRequest):
+    """AceStep专用端点，用于生成背景音乐/音频"""
+    try:
+        if request.response_format not in ALLOWED_SPEECH_OUTPUT_AUDIO_TYPES:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {request.response_format}",
+            )
+
+        model_instance: TTSBackend = get_model_instance()
+        if not isinstance(model_instance, TTSBackend):
+            return HTTPException(
+                status_code=400, detail="Model instance does not support TTS API"
+            )
+
+        # 检查是否为AceStep模型
+        from vox_box.backends.tts.acestep import AceStep
+
+        if not isinstance(model_instance, AceStep):
+            return HTTPException(
+                status_code=400, detail="This endpoint requires AceStep model"
+            )
+
+        # 准备参数
+        kwargs = {
+            "lyrics": request.lyrics,
+            "audio_duration": request.audio_duration,
+            "infer_step": request.infer_step,
+            "guidance_scale": request.guidance_scale,
+            "scheduler_type": request.scheduler_type,
+            "cfg_type": request.cfg_type,
+            "omega_scale": request.omega_scale,
+            "guidance_interval": request.guidance_interval,
+            "guidance_interval_decay": request.guidance_interval_decay,
+            "min_guidance_scale": request.min_guidance_scale,
+            "use_erg_tag": request.use_erg_tag,
+            "use_erg_lyric": request.use_erg_lyric,
+            "use_erg_diffusion": request.use_erg_diffusion,
+            "oss_steps": request.oss_steps,
+            "guidance_scale_text": request.guidance_scale_text,
+            "guidance_scale_lyric": request.guidance_scale_lyric,
+            "actual_seeds": request.actual_seeds,
+        }
+
+        func = functools.partial(
+            model_instance.speech,
+            request.prompt,
+            None,  # voice参数对AceStep无意义
+            1.0,  # speed参数对AceStep无意义
+            request.response_format,
+            **kwargs,
+        )
+
+        loop = asyncio.get_event_loop()
+        audio_file = await loop.run_in_executor(
+            executor,
+            func,
+        )
+
+        media_type = get_media_type(request.response_format)
+        return FileResponse(audio_file, media_type=media_type)
+    except Exception as e:
+        return HTTPException(
+            status_code=500, detail=f"Failed to generate audio with AceStep: {e}"
+        )
 
 
 def get_media_type(response_format) -> str:

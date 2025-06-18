@@ -34,6 +34,7 @@ class BackendEnum(str, Enum):
     DIA = "Dia"
     FASTER_WHISPER = "FasterWhisper"
     FUN_ASR = "FunASR"
+    ACESTEP = "AceStep"
 
 
 class TaskTypeEnum(str, Enum):

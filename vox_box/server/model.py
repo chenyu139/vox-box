@@ -7,6 +7,7 @@ from vox_box.backends.tts.bark import Bark
 from vox_box.backends.tts.base import TTSBackend
 from vox_box.backends.tts.cosyvoice import CosyVoice
 from vox_box.backends.tts.dia import Dia
+from vox_box.backends.tts.acestep import AceStep
 from vox_box.config.config import BackendEnum, Config
 from vox_box.downloader import downloaders
 from vox_box.estimator.estimate import estimate_model
@@ -58,6 +59,8 @@ class ModelInstance:
             self._backend_framework = CosyVoice(cfg)
         elif backend_framework_name == BackendEnum.DIA:
             self._backend_framework = Dia(cfg)
+        elif backend_framework_name == BackendEnum.ACESTEP:
+            self._backend_framework = AceStep(cfg)
 
     def run(self):
         global _instance

@@ -7,6 +7,7 @@ from vox_box.estimator.cosyvoice import CosyVoice
 from vox_box.estimator.dia import Dia
 from vox_box.estimator.faster_whisper import FasterWhisper
 from vox_box.estimator.funasr import FunASR
+from vox_box.estimator.acestep import AceStep
 from vox_box.utils.model import create_model_dict
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ def estimate_model(cfg: Config) -> Dict:
         FunASR(cfg),
         Bark(cfg),
         Dia(cfg),
+        AceStep(cfg),
     ]
 
     model = cfg.model or cfg.huggingface_repo_id or cfg.model_scope_model_id
