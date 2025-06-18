@@ -104,18 +104,18 @@ class AceStepRequest(BaseModel):
     prompt: str
     lyrics: str = ""
     audio_duration: float = 10.0
-    infer_step: int = 50
-    guidance_scale: float = 7.5
-    scheduler_type: str = "ddim"
-    cfg_type: str = "full"
-    omega_scale: float = 1.0
-    guidance_interval: float = 1.0
+    infer_step: int = 60  # 与ACE-Step原始实现一致
+    guidance_scale: float = 15.0  # 与ACE-Step原始实现一致
+    scheduler_type: str = "euler"
+    cfg_type: str = "apg"  # 与ACE-Step原始实现一致
+    omega_scale: float = 10.0  # 与ACE-Step原始实现一致
+    guidance_interval: float = 0.5  # 与ACE-Step原始实现一致
     guidance_interval_decay: float = 0.0
-    min_guidance_scale: float = 1.0
+    min_guidance_scale: float = 3.0  # 与ACE-Step原始实现一致
     use_erg_tag: bool = True
     use_erg_lyric: bool = True
     use_erg_diffusion: bool = True
-    oss_steps: list = [0]
+    oss_steps: list = []  # 与ACE-Step原始实现一致
     guidance_scale_text: float = 0.0
     guidance_scale_lyric: float = 0.0
     actual_seeds: list = [42]

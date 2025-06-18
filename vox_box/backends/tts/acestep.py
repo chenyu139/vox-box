@@ -29,25 +29,25 @@ class AceStep(TTSBackend):
         # 设置CUDA设备
         self._parse_and_set_cuda_visible_devices()
 
-        # 默认参数配置，基于infer.py和infer-api.py
+        # 默认参数配置，与ACE-Step原始实现保持一致
         self.default_params = {
             "bf16": True,
             "torch_compile": False,
             "cpu_offload": False,
             "overlapped_decode": False,
             "audio_duration": 10.0,
-            "infer_step": 50,
-            "guidance_scale": 7.5,
-            "scheduler_type": "ddim",
-            "cfg_type": "full",
-            "omega_scale": 1.0,
-            "guidance_interval": 1.0,
+            "infer_step": 60,  # 与pipeline默认值一致
+            "guidance_scale": 15.0,  # 与pipeline默认值一致
+            "scheduler_type": "euler",
+            "cfg_type": "apg",  # 与pipeline默认值一致
+            "omega_scale": 10.0,  # 与pipeline默认值一致
+            "guidance_interval": 0.5,  # 与pipeline默认值一致
             "guidance_interval_decay": 0.0,
-            "min_guidance_scale": 1.0,
+            "min_guidance_scale": 3.0,  # 与pipeline默认值一致
             "use_erg_tag": True,
             "use_erg_lyric": True,
             "use_erg_diffusion": True,
-            "oss_steps": [0],
+            "oss_steps": [],  # 与pipeline默认值一致
             "guidance_scale_text": 0.0,
             "guidance_scale_lyric": 0.0,
             "actual_seeds": [42],
@@ -146,7 +146,7 @@ class AceStep(TTSBackend):
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_path = os.path.join(temp_dir, output_filename)
 
-                # 调用AceStep模型进行推理，按照infer.py的参数顺序
+                # 调用AceStep模型进行推理，按照infer-api.py的参数顺序使用位置参数
                 self._model(
                     audio_duration=params["audio_duration"],
                     prompt=prompt,
