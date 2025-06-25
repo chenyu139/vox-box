@@ -6,7 +6,7 @@ authors = ["GPUStack Authors <contact@gpustack.ai>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.14"
+python = "^3.10"
 absl-py = "2.1.0"
 accelerate = "1.1.1"
 addict = "2.4.0"
@@ -91,10 +91,6 @@ pyworld = "^0.3.5"
 loguru = "^0.7.3"
 py3langid = "^0.3.0"
 torchvision = "^0.22.1"
-pypinyin = "^0.54.0"
-hangul-romanize = "^0.1.0"
-num2words = "^0.5.14"
-spacy = "^3.8.7"
 
 [build-system]
 requires = ["poetry-core"]

@@ -4,3 +4,6 @@
 [submodule "vox_box/third_party/dia"]
 	path = vox_box/third_party/dia
 	url = https://github.com/nari-labs/dia.git
+[submodule "vox_box/third_party/ACE-Step"]
+	path = vox_box/third_party/ACE-Step
+	url = git@github.com:ace-step/ACE-Step.git

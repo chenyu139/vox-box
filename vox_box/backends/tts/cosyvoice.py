@@ -5,7 +5,7 @@ import wave
 import numpy as np
 import tempfile
 import torch
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Generator
 
 from vox_box.backends.tts.base import TTSBackend
 from vox_box.utils.log import log_method
@@ -172,6 +172,55 @@ class CosyVoice(TTSBackend):
 
             output_file_path = convert(wav_file_path, response_format, speed)
             return output_file_path
+
+    @log_method
+    def speech_instruct_stream(
+        self,
+        input: str,
+        instruct_text: str,
+        speech,
+        speed: float = 1,
+        response_format: str = "wav",
+        **kwargs,
+    ) -> Generator[bytes, None, None]:
+        """流式输出音频数据的测试方法，利用inference_instruct2的流式特性"""
+        # 调用CosyVoice的inference_instruct2方法，利用其流式输出特性
+        model_output = self._model.inference_instruct2(input, instruct_text, speech)
+
+        # 音频参数配置
+        sample_rate = 22050
+        channels = 1
+        sample_width = 2  # 16-bit
+
+        def create_wav_chunk(audio_data):
+            """创建WAV格式的音频块，包含完整的WAV头"""
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
+                wav_file_path = temp_file.name
+                with wave.open(wav_file_path, "wb") as wf:
+                    wf.setnchannels(channels)
+                    wf.setsampwidth(sample_width)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio_data)
+
+                # 转换格式
+                if response_format != "wav":
+                    output_file_path = convert(wav_file_path, response_format, speed)
+                    with open(output_file_path, "rb") as f:
+                        chunk_data = f.read()
+                    if os.path.exists(output_file_path):
+                        os.unlink(output_file_path)
+                    return chunk_data
+                else:
+                    with open(wav_file_path, "rb") as f:
+                        return f.read()
+
+        # 利用模型的流式输出，立即处理每个音频片段
+        for audio_chunk in model_output:
+            tts_audio_bytes = (
+                (audio_chunk["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
+            )
+            # 立即输出每个音频块
+            yield create_wav_chunk(tts_audio_bytes)
 
     def _get_voices(self) -> List[str]:
         voices = self._model.list_available_spks()
