@@ -130,21 +130,9 @@
             </div>
             
             <div class="form-group">
-                <label>
-                    <input type="checkbox" id="interruptCurrent" checked>
-                    新音频流时中断当前播放
+                <label style="color: #28a745; font-weight: bold;">
+                    🎵 流式播放模式：边接收边播放音频数据
                 </label>
-            </div>
-            
-            <div class="form-group">
-                <label>
-                    <input type="checkbox" id="enableStreaming" checked>
-                    启用真正的流式播放（边接收边播放）
-                </label>
-                <small style="color: #666; display: block; margin-top: 5px;">
-                    启用后：音频数据一边接收一边播放，实现真正的流式体验<br>
-                    禁用后：等待所有数据接收完成后再播放
-                </small>
             </div>
             
             <button type="submit" id="generateBtn">生成流式音频</button>
@@ -184,11 +172,9 @@
         let audioChunks = [];
         let audioQueue = [];
         let isPlaying = false;
-        let currentAudioIndex = 0;
         let currentHowl = null;
-        let howlQueue = [];
-        let isStreamingPlayback = false;
         let audioUrls = [];
+        let isFirstChunk = true;
         
         // 更新速度显示
         speedSlider.addEventListener('input', function() {
@@ -221,22 +207,15 @@
                 return;
             }
             
-            // 检查是否需要中断当前播放
-            const interruptCurrent = document.getElementById('interruptCurrent').checked;
-            if (interruptCurrent && isPlaying) {
-                audioPlayer.pause();
-                audioPlayer.currentTime = 0;
-                isPlaying = false;
-                showStatus('已中断当前播放，开始新的音频生成...', 'info');
-            } else if (isPlaying) {
+            // 流式播放模式：如果当前有音频在播放，新音频将加入队列
+            if (isPlaying) {
                 showStatus('当前音频正在播放，新音频将加入队列...', 'info');
             }
             
             generateBtn.disabled = true;
             stopBtn.disabled = false;
             audioChunks = [];
-             // 重置流式播放状态
-             isStreamingPlayback = false;
+             isFirstChunk = true;
              // 清理之前的音频URL
              audioUrls.forEach(url => URL.revokeObjectURL(url));
              audioUrls = [];
@@ -261,41 +240,31 @@
                 showStatus('开始接收音频流...', 'success');
                 
                 // 读取流式数据
-                let isFirstChunk = true;
                 while (true) {
                     const { done, value } = await reader.read();
                     
                     if (done) {
-                        showStatus('音频流接收完成！', 'success');
+                        showStatus('音频生成完成！', 'success');
                         break;
                     }
                     
                     // 将音频块添加到数组中
                     audioChunks.push(value);
                     
-                    // 合并所有音频块并创建音频对象
-                    const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-                    const combinedArray = new Uint8Array(totalLength);
-                    let offset = 0;
-                    
-                    for (const chunk of audioChunks) {
-                        combinedArray.set(chunk, offset);
-                        offset += chunk.length;
-                    }
-                    
-                    const audioBlob = new Blob([combinedArray], { 
+                    // 创建当前音频块的Blob（只包含新增数据）
+                    const currentChunkBlob = new Blob([value], { 
                         type: document.getElementById('response_format').value === 'wav' ? 'audio/wav' : 'audio/mpeg' 
                     });
                     
                     // 实时更新音频播放器
                     if (isFirstChunk) {
                         // 第一个音频块立即开始播放
-                        updateAudioPlayer(audioBlob, true);
+                        updateAudioPlayer(currentChunkBlob, true);
                         isFirstChunk = false;
                         showStatus('开始流式播放，继续接收音频数据...', 'success');
                     } else {
-                        // 后续音频块更新播放器但不中断播放
-                        updateAudioPlayer(audioBlob, false);
+                        // 后续音频块追加到播放队列
+                        updateAudioPlayer(currentChunkBlob, false);
                     }
                 }
                 
@@ -360,53 +329,21 @@
             }
         }
         
-        // 更新流式音频
-        function updateStreamingAudio(audioUrl) {
-            // 对于流式播放，我们创建新的Howl实例来替换当前播放
-            // 这样可以实现更平滑的音频切换
-            if (currentHowl && currentHowl.playing()) {
-                const currentTime = currentHowl.seek();
-                currentHowl.stop();
-                createAndPlayHowl(audioUrl, true);
-                // 尝试从相似的时间点继续播放
-                if (currentTime > 0) {
-                    currentHowl.seek(Math.min(currentTime, currentHowl.duration() || 0));
-                }
-            }
-        }
+        // updateStreamingAudio 函数已移除，现在使用队列方式处理流式音频
         
-        // 更新音频播放器 - 实现真正的流式播放
+        // 流式音频播放器 - 使用 Howler.js 实现简单流式播放
         function updateAudioPlayer(audioBlob, isFirstChunk = false) {
             const audioUrl = URL.createObjectURL(audioBlob);
             audioUrls.push(audioUrl);
             
-            // 检查是否启用真正的流式播放
-            const enableStreaming = document.getElementById('enableStreaming').checked;
-            const interruptCurrent = document.getElementById('interruptCurrent').checked;
-            
-            if (enableStreaming) {
-                // 流式播放模式：立即播放新音频
-                if (isFirstChunk || !currentHowl) {
-                    createAndPlayHowl(audioUrl, true);
-                } else {
-                    // 更新当前播放的音频源（Howler.js会平滑过渡）
-                    updateStreamingAudio(audioUrl);
-                }
+            if (isFirstChunk || !currentHowl) {
+                // 第一个音频块立即播放
+                createAndPlayHowl(audioUrl, true);
             } else {
-                // 传统模式：等待所有数据接收完毕后播放
-                if (interruptCurrent && isPlaying && currentHowl) {
-                    // 中断当前播放，立即播放新音频
-                    currentHowl.stop();
-                    createAndPlayHowl(audioUrl, true);
-                } else {
-                    // 添加到队列
-                    audioQueue.push(audioUrl);
-                    updateQueueStatus();
-                    
-                    if (!isPlaying) {
-                        playNextInQueue();
-                    }
-                }
+                // 后续音频块添加到队列，实现连续播放
+                audioQueue.push(audioUrl);
+                updateQueueStatus();
+                showStatus(`音频块已添加到队列，队列中有 ${audioQueue.length} 个音频块`, 'info');
             }
             
             // 启用播放控制按钮
@@ -433,14 +370,22 @@
             if (currentHowl) {
                 currentHowl.play();
                 isPlaying = true;
+                showStatus('开始播放音频...', 'info');
+            } else {
+                showStatus('请先生成音频再播放', 'warning');
             }
         });
         
         // 暂停按钮处理
         pauseBtn.addEventListener('click', function() {
-            if (currentHowl) {
+            if (currentHowl && isPlaying) {
                 currentHowl.pause();
                 isPlaying = false;
+                showStatus('音频已暂停', 'info');
+            } else if (currentHowl && !isPlaying) {
+                showStatus('音频已经处于暂停状态', 'info');
+            } else {
+                showStatus('没有音频可以暂停', 'warning');
             }
         });
         
@@ -453,27 +398,17 @@
                 currentHowl.stop();
                 currentHowl = null;
             }
-            // 清空队列
+            // 清空队列和URL
             audioQueue = [];
-            howlQueue = [];
+            audioUrls.forEach(url => URL.revokeObjectURL(url));
             audioUrls = [];
             isPlaying = false;
+            isFirstChunk = true;
             updateQueueStatus();
             showStatus('队列已清空', 'info');
         });
         
-        // 音频播放器事件监听
-        audioPlayer.addEventListener('play', function() {
-            showStatus('正在播放音频...', 'success');
-        });
-        
-        audioPlayer.addEventListener('pause', function() {
-            showStatus('音频已暂停', 'info');
-        });
-        
-        audioPlayer.addEventListener('ended', function() {
-            showStatus('音频播放完成', 'success');
-        });
+        // 音频播放器事件监听已移至 Howler.js 实例中
         
         // 初始状态
         showStatus('请填写表单并选择音频文件开始测试', 'info');

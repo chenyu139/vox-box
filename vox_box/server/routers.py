@@ -3,6 +3,8 @@ import functools
 import tempfile
 import os
 import torchaudio
+import librosa
+import torch
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, StreamingResponse
@@ -15,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 router = APIRouter()
 
 executor = ThreadPoolExecutor(max_workers=1)
+max_val = 0.8
 
 
 def load_wav(wav, target_sr):
@@ -27,6 +30,16 @@ def load_wav(wav, target_sr):
         speech = torchaudio.transforms.Resample(
             orig_freq=sample_rate, new_freq=target_sr
         )(speech)
+    return speech
+
+
+def postprocess(speech, top_db=60, hop_length=220, win_length=440):
+    speech, _ = librosa.effects.trim(
+        speech, top_db=top_db, frame_length=win_length, hop_length=hop_length
+    )
+    if speech.abs().max() > max_val:
+        speech = speech / speech.abs().max() * max_val
+    speech = torch.concat([speech, torch.zeros(1, int(24000 * 0.2))], dim=1)
     return speech
 
 
@@ -214,6 +227,104 @@ async def speech_instruct(request: Request):
     except Exception as e:
         return HTTPException(
             status_code=500, detail=f"Failed to generate speech_instruct, {e}"
+        )
+
+
+@router.post("/v1/audio/speech_instruct_zero_shot")
+async def speech_instruct_zero_shot(request: Request):
+    try:
+        form = await request.form()
+        keys = form.keys()
+
+        # 检查必需的字段
+        required_fields = ["model", "input", "prompt_text", "voice"]
+        for field in required_fields:
+            if field not in keys:
+                return HTTPException(
+                    status_code=400, detail=f"Field {field} is required"
+                )
+
+        # 获取表单数据
+        input_text = form.get("input")
+        prompt_text = form.get("prompt_text")
+        response_format = form.get("response_format", "mp3")
+        speed = float(form.get("speed", 1.0))
+
+        # 获取音频文件
+        voice_file: UploadFile = form["voice"]
+        if not voice_file:
+            return HTTPException(status_code=400, detail="Voice audio file is required")
+
+        # 检查音频格式
+        file_content_type = voice_file.content_type
+        if file_content_type not in ALLOWED_TRANSCRIPTIONS_INPUT_AUDIO_FORMATS:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {file_content_type}",
+            )
+
+        # 检查输出格式
+        if response_format not in ALLOWED_SPEECH_OUTPUT_AUDIO_TYPES:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {response_format}",
+            )
+
+        # 检查速度参数
+        if speed < 0.25 or speed > 2:
+            return HTTPException(
+                status_code=400, detail="Speed must be between 0.25 and 2"
+            )
+
+        # 保存音频文件到临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            voice_audio_bytes = await voice_file.read()
+            temp_file.write(voice_audio_bytes)
+            temp_audio_path = temp_file.name
+
+        try:
+            # 使用load_wav处理音频文件
+            speech = postprocess(
+                load_wav(temp_audio_path, 16000)
+            )  # 假设目标采样率为16kHz
+
+            model_instance: TTSBackend = get_model_instance()
+            if not isinstance(model_instance, TTSBackend):
+                return HTTPException(
+                    status_code=400, detail="Model instance does not support speech API"
+                )
+
+            # 检查模型是否支持speech_zero_shot方法
+            if not hasattr(model_instance, "speech_zero_shot"):
+                return HTTPException(
+                    status_code=400,
+                    detail="Model does not support speech_zero_shot API",
+                )
+
+            func = functools.partial(
+                model_instance.speech_zero_shot,
+                input_text,
+                prompt_text,
+                speech,  # 传递处理后的speech tensor而不是原始字节
+                speed,
+                response_format,
+            )
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+
+        loop = asyncio.get_event_loop()
+        audio_file = await loop.run_in_executor(
+            executor,
+            func,
+        )
+
+        media_type = get_media_type(response_format)
+        return FileResponse(audio_file, media_type=media_type)
+    except Exception as e:
+        return HTTPException(
+            status_code=500, detail=f"Failed to generate speech_zero_shot, {e}"
         )
 
 

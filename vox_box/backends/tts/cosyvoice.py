@@ -174,6 +174,35 @@ class CosyVoice(TTSBackend):
             return output_file_path
 
     @log_method
+    def speech_zero_shot(
+        self,
+        input: str,
+        prompt_text: str,
+        speech,
+        speed: float = 1,
+        response_format: str = "mp3",
+        **kwargs,
+    ) -> str:
+        # 调用CosyVoice的inference_zero_shot方法
+        model_output = self._model.inference_zero_shot(input, prompt_text, speech)
+
+        # 生成输出音频文件
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
+            wav_file_path = temp_file.name
+            with wave.open(wav_file_path, "wb") as wf:
+                wf.setnchannels(1)  # single track
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(22050)  # Sample rate
+                for i in model_output:
+                    tts_audio = (
+                        (i["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
+                    )
+                    wf.writeframes(tts_audio)
+
+            output_file_path = convert(wav_file_path, response_format, speed)
+            return output_file_path
+
+    @log_method
     def speech_instruct_stream(
         self,
         input: str,
