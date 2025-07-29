@@ -114,6 +114,8 @@ class FasterWhisper(STTBackend):
             temperature=temperature,
             without_timestamps=without_timestamps,
             word_timestamps=word_timestamps,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
         )
 
         # The transcription will actually run here.
