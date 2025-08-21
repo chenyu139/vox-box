@@ -106,8 +106,8 @@
             </div>
             
             <div class="form-group">
-                <label for="instruct_text">指令文本:</label>
-                <textarea id="instruct_text" name="instruct_text" placeholder="请输入音频生成指令..." required>请用自然的语调朗读这段文字。</textarea>
+                <label for="prompt_text">提示文本:</label>
+                <textarea id="prompt_text" name="prompt_text" placeholder="请输入音频生成提示..." required>请用自然的语调朗读这段文字。</textarea>
             </div>
             
             <div class="form-group">
@@ -224,7 +224,7 @@
             
             try {
                 // 发送流式请求
-                const response = await fetch('/v1/audio/speech_instruct_stream', {
+                const response = await fetch('/v1/audio/speech_zero_shot_stream', {
                     method: 'POST',
                     body: formData
                 });
@@ -239,32 +239,64 @@
                 
                 showStatus('开始接收音频流...', 'success');
                 
-                // 读取流式数据
+                // 读取流式数据 - 基于WAV文件大小的边界检测
+                let currentWavBuffer = [];
+                let expectedWavSize = null;
+                
                 while (true) {
                     const { done, value } = await reader.read();
                     
                     if (done) {
+                        // 处理最后一个WAV文件（如果有）
+                        if (currentWavBuffer.length > 0) {
+                            const completeWavBlob = new Blob(currentWavBuffer, { type: 'audio/wav' });
+                            addCompleteWavToQueue(completeWavBlob);
+                        }
                         showStatus('音频生成完成！', 'success');
                         break;
                     }
                     
-                    // 将音频块添加到数组中
-                    audioChunks.push(value);
+                    // 将数据添加到当前WAV缓冲区
+                    currentWavBuffer.push(value);
                     
-                    // 创建当前音频块的Blob（只包含新增数据）
-                    const currentChunkBlob = new Blob([value], { 
-                        type: document.getElementById('response_format').value === 'wav' ? 'audio/wav' : 'audio/mpeg' 
-                    });
+                    // 检查是否有完整的WAV文件
+                    const totalBytes = currentWavBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
                     
-                    // 实时更新音频播放器
-                    if (isFirstChunk) {
-                        // 第一个音频块立即开始播放
-                        updateAudioPlayer(currentChunkBlob, true);
-                        isFirstChunk = false;
-                        showStatus('开始流式播放，继续接收音频数据...', 'success');
-                    } else {
-                        // 后续音频块追加到播放队列
-                        updateAudioPlayer(currentChunkBlob, false);
+                    // 如果还没有读取WAV头，尝试解析
+                    if (expectedWavSize === null && totalBytes >= 44) {
+                        const headerBuffer = new Uint8Array(44);
+                        let offset = 0;
+                        for (const chunk of currentWavBuffer) {
+                            const copyLength = Math.min(chunk.length, 44 - offset);
+                            headerBuffer.set(new Uint8Array(chunk.slice(0, copyLength)), offset);
+                            offset += copyLength;
+                            if (offset >= 44) break;
+                        }
+                        
+                        // 解析WAV文件大小（字节4-7是ChunkSize）
+                        const dataView = new DataView(headerBuffer.buffer);
+                        const chunkSize = dataView.getUint32(4, true); // 小端序
+                        expectedWavSize = chunkSize + 8; // 加上RIFF头的8字节
+                        
+                        showStatus(`检测到WAV文件，预期大小: ${expectedWavSize} 字节`, 'info');
+                    }
+                    
+                    // 如果已知文件大小且数据足够，提取完整WAV
+                    if (expectedWavSize && totalBytes >= expectedWavSize) {
+                        // 提取完整的WAV文件
+                        const completeWavData = extractCompleteWav(currentWavBuffer, expectedWavSize);
+                        const completeWavBlob = new Blob([completeWavData], { type: 'audio/wav' });
+                        
+                        // 加入播放队列
+                        addCompleteWavToQueue(completeWavBlob);
+                        
+                        // 移除已处理的数据，保留剩余数据
+                        currentWavBuffer = removeProcessedData(currentWavBuffer, expectedWavSize);
+                        expectedWavSize = null; // 重置，准备处理下一个WAV
+                        
+                        showStatus(`完整WAV文件已加入队列，队列中有 ${audioQueue.length} 个音频`, 'success');
+                    } else if (expectedWavSize) {
+                        showStatus(`正在接收WAV数据: ${totalBytes}/${expectedWavSize} 字节`, 'info');
                     }
                 }
                 
@@ -331,24 +363,67 @@
         
         // updateStreamingAudio 函数已移除，现在使用队列方式处理流式音频
         
-        // 流式音频播放器 - 使用 Howler.js 实现简单流式播放
-        function updateAudioPlayer(audioBlob, isFirstChunk = false) {
+        // 辅助函数：提取完整WAV数据
+        function extractCompleteWav(bufferArray, size) {
+            const result = new Uint8Array(size);
+            let offset = 0;
+            let remaining = size;
+            
+            for (const chunk of bufferArray) {
+                if (remaining <= 0) break;
+                const copyLength = Math.min(chunk.length, remaining);
+                result.set(new Uint8Array(chunk.slice(0, copyLength)), offset);
+                offset += copyLength;
+                remaining -= copyLength;
+            }
+            
+            return result;
+        }
+        
+        // 辅助函数：移除已处理的数据
+        function removeProcessedData(bufferArray, processedSize) {
+            let remaining = processedSize;
+            const newBuffer = [];
+            
+            for (const chunk of bufferArray) {
+                if (remaining >= chunk.length) {
+                    remaining -= chunk.length;
+                } else if (remaining > 0) {
+                    newBuffer.push(chunk.slice(remaining));
+                    remaining = 0;
+                } else {
+                    newBuffer.push(chunk);
+                }
+            }
+            
+            return newBuffer;
+        }
+        
+        // 将完整WAV文件加入播放队列
+        function addCompleteWavToQueue(audioBlob) {
             const audioUrl = URL.createObjectURL(audioBlob);
             audioUrls.push(audioUrl);
             
-            if (isFirstChunk || !currentHowl) {
-                // 第一个音频块立即播放
+            if (!currentHowl || !isPlaying) {
+                // 如果没有音频在播放，立即播放
                 createAndPlayHowl(audioUrl, true);
+                showStatus('开始播放完整WAV文件', 'success');
             } else {
-                // 后续音频块添加到队列，实现连续播放
+                // 添加到队列
                 audioQueue.push(audioUrl);
                 updateQueueStatus();
-                showStatus(`音频块已添加到队列，队列中有 ${audioQueue.length} 个音频块`, 'info');
+                showStatus(`完整WAV文件已添加到队列，队列中有 ${audioQueue.length} 个音频`, 'info');
             }
             
             // 启用播放控制按钮
             playBtn.disabled = false;
             pauseBtn.disabled = false;
+        }
+        
+        // 保留原有的updateAudioPlayer函数以防其他地方调用
+        function updateAudioPlayer(audioBlob, isFirstChunk = false) {
+            // 直接调用新的完整WAV处理函数
+            addCompleteWavToQueue(audioBlob);
         }
         
         // 播放下一个队列中的音频

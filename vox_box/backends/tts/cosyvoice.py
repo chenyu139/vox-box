@@ -119,7 +119,7 @@ class CosyVoice(TTSBackend):
         input: str,
         voice: Optional[str] = "Chinese Female",
         speed: float = 1,
-        reponse_format: str = "mp3",
+        reponse_format: str = "wav",
         **kwargs,
     ) -> str:
         if voice not in self._voices:
@@ -151,7 +151,7 @@ class CosyVoice(TTSBackend):
         instruct_text: str,
         speech,
         speed: float = 1,
-        response_format: str = "mp3",
+        response_format: str = "wav",
         **kwargs,
     ) -> str:
         # 调用CosyVoice的inference_instruct2方法
@@ -180,7 +180,7 @@ class CosyVoice(TTSBackend):
         prompt_text: str,
         speech,
         speed: float = 1,
-        response_format: str = "mp3",
+        response_format: str = "wav",
         **kwargs,
     ) -> str:
         # 调用CosyVoice的inference_zero_shot方法
@@ -203,6 +203,68 @@ class CosyVoice(TTSBackend):
             return output_file_path
 
     @log_method
+    def speech_zero_shot_stream(
+        self,
+        input: str,
+        prompt_text: str,
+        speech,
+        speed: float = 1,
+        response_format: str = "wav",
+        **kwargs,
+    ) -> Generator[bytes, None, None]:
+        """流式输出零样本语音合成音频数据"""
+        # 调用CosyVoice的inference_zero_shot方法，利用其流式输出特性
+        model_output = self._model.inference_zero_shot(
+            input, prompt_text, speech, stream=True
+        )
+
+        # 音频参数配置
+        sample_rate = 22050
+        channels = 1
+        sample_width = 2  # 16-bit
+        chunk_counter = 0  # 添加计数器用于文件编号
+
+        def create_wav_chunk(audio_data):
+            """创建WAV格式的音频块，包含完整的WAV头"""
+            nonlocal chunk_counter
+            chunk_counter += 1
+
+            # 使用固定文件名保存临时文件
+            wav_file_path = f"{chunk_counter}.wav"
+            print(f"保存音频文件: {os.path.abspath(wav_file_path)}")  # 打印文件绝对路径
+
+            with wave.open(wav_file_path, "wb") as wf:
+                wf.setnchannels(channels)
+                wf.setsampwidth(sample_width)
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_data)
+
+            # 转换格式
+            if response_format != "wav":
+                output_file_path = convert(wav_file_path, response_format, speed)
+                print(
+                    f"转换后文件: {os.path.abspath(output_file_path)}"
+                )  # 打印转换后文件路径
+                with open(output_file_path, "rb") as f:
+                    chunk_data = f.read()
+                # 注意：这里不删除文件，保留用于测试
+                # if os.path.exists(output_file_path):
+                #     os.unlink(output_file_path)
+                return chunk_data
+            else:
+                with open(wav_file_path, "rb") as f:
+                    return f.read()
+                # 注意：这里不删除wav文件，保留用于测试
+
+        # 利用模型的流式输出，立即处理每个音频片段
+        for audio_chunk in model_output:
+            tts_audio_bytes = (
+                (audio_chunk["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
+            )
+            # 立即输出每个音频块
+            yield create_wav_chunk(tts_audio_bytes)
+
+    @log_method
     def speech_instruct_stream(
         self,
         input: str,
@@ -220,28 +282,39 @@ class CosyVoice(TTSBackend):
         sample_rate = 22050
         channels = 1
         sample_width = 2  # 16-bit
+        chunk_counter = 0  # 添加计数器用于文件编号
 
         def create_wav_chunk(audio_data):
             """创建WAV格式的音频块，包含完整的WAV头"""
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
-                wav_file_path = temp_file.name
-                with wave.open(wav_file_path, "wb") as wf:
-                    wf.setnchannels(channels)
-                    wf.setsampwidth(sample_width)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(audio_data)
+            nonlocal chunk_counter
+            chunk_counter += 1
 
-                # 转换格式
-                if response_format != "wav":
-                    output_file_path = convert(wav_file_path, response_format, speed)
-                    with open(output_file_path, "rb") as f:
-                        chunk_data = f.read()
-                    if os.path.exists(output_file_path):
-                        os.unlink(output_file_path)
-                    return chunk_data
-                else:
-                    with open(wav_file_path, "rb") as f:
-                        return f.read()
+            # 使用固定文件名保存临时文件
+            wav_file_path = f"{chunk_counter}.wav"
+            print(f"保存音频文件: {os.path.abspath(wav_file_path)}")  # 打印文件绝对路径
+
+            with wave.open(wav_file_path, "wb") as wf:
+                wf.setnchannels(channels)
+                wf.setsampwidth(sample_width)
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_data)
+
+            # 转换格式
+            if response_format != "wav":
+                output_file_path = convert(wav_file_path, response_format, speed)
+                print(
+                    f"转换后文件: {os.path.abspath(output_file_path)}"
+                )  # 打印转换后文件路径
+                with open(output_file_path, "rb") as f:
+                    chunk_data = f.read()
+                # 注意：这里不删除文件，保留用于测试
+                # if os.path.exists(output_file_path):
+                #     os.unlink(output_file_path)
+                return chunk_data
+            else:
+                with open(wav_file_path, "rb") as f:
+                    return f.read()
+                # 注意：这里不删除wav文件，保留用于测试
 
         # 利用模型的流式输出，立即处理每个音频片段
         for audio_chunk in model_output:

@@ -423,6 +423,101 @@ async def speech_instruct_stream(request: Request):
         )
 
 
+@router.post("/v1/audio/speech_zero_shot_stream")
+async def speech_zero_shot_stream(request: Request):
+    try:
+        form = await request.form()
+        keys = form.keys()
+
+        # 检查必需的字段
+        required_fields = ["model", "input", "prompt_text", "voice"]
+        for field in required_fields:
+            if field not in keys:
+                return HTTPException(
+                    status_code=400, detail=f"Field {field} is required"
+                )
+
+        # 获取表单数据
+        input_text = form.get("input")
+        prompt_text = form.get("prompt_text")
+        response_format = form.get("response_format", "wav")
+        speed = float(form.get("speed", 1.0))
+
+        # 获取音频文件
+        voice_file: UploadFile = form["voice"]
+        if not voice_file:
+            return HTTPException(status_code=400, detail="Voice audio file is required")
+
+        # 检查音频格式
+        file_content_type = voice_file.content_type
+        if file_content_type not in ALLOWED_TRANSCRIPTIONS_INPUT_AUDIO_FORMATS:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {file_content_type}",
+            )
+
+        # 检查输出格式
+        if response_format not in ALLOWED_SPEECH_OUTPUT_AUDIO_TYPES:
+            return HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format: {response_format}",
+            )
+
+        # 检查速度参数
+        if speed < 0.25 or speed > 2:
+            return HTTPException(
+                status_code=400, detail="Speed must be between 0.25 and 2"
+            )
+
+        # 保存音频文件到临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            voice_audio_bytes = await voice_file.read()
+            temp_file.write(voice_audio_bytes)
+            temp_audio_path = temp_file.name
+
+        try:
+            # 使用load_wav处理音频文件
+            speech = load_wav(temp_audio_path, 16000)  # 假设目标采样率为16kHz
+
+            model_instance: TTSBackend = get_model_instance()
+            if not isinstance(model_instance, TTSBackend):
+                return HTTPException(
+                    status_code=400, detail="Model instance does not support speech API"
+                )
+
+            media_type = get_media_type(response_format)
+
+            # 创建流式生成器
+            def generate_audio_stream():
+                # 调用模型的流式方法
+                for audio_chunk in model_instance.speech_zero_shot_stream(
+                    input_text,
+                    prompt_text,
+                    speech,
+                    speed,
+                    response_format,
+                ):
+                    yield audio_chunk
+
+            return StreamingResponse(
+                generate_audio_stream(),
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f"attachment; filename=speech_zero_shot.{response_format}"
+                },
+            )
+
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+
+    except Exception as e:
+        return HTTPException(
+            status_code=500, detail=f"Failed to generate speech_zero_shot_stream, {e}"
+        )
+
+
 # ref: https://github.com/LMS-Community/slimserver/blob/public/10.0/types.conf
 ALLOWED_TRANSCRIPTIONS_INPUT_AUDIO_FORMATS = {
     # flac
