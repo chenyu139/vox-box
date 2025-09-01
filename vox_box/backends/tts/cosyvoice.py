@@ -5,6 +5,8 @@ import wave
 import numpy as np
 import tempfile
 import torch
+import json
+import uuid
 from typing import Dict, List, Optional, Generator
 
 from vox_box.backends.tts.base import TTSBackend
@@ -21,6 +23,109 @@ paths_to_insert = [
 ]
 
 builtin_spk2info_path = os.path.join(os.path.dirname(__file__), "cosyvoice_spk2info.pt")
+
+
+def add_aigc_metadata_to_wav(wav_file_path: str):
+    """为WAV文件添加AIGC合规元数据"""
+    try:
+        import mutagen
+        from mutagen.wave import WAVE
+        from mutagen.id3 import ID3NoHeaderError
+
+        # 生成AIGC元数据
+        produce_id = str(uuid.uuid4())
+        propagate_id = produce_id  # 注1: 首次写入时，传播编号与制作编号一致
+
+        aigc_metadata = {
+            "AIGC": {
+                "Label": "1",  # 属于人工智能生成合成内容
+                "ContentProducer": "VoxBox-TTS",  # 生成合成服务提供者名称
+                "ProduceID": produce_id,  # 内容制作编号
+                "ReservedCode1": "",  # 预留字段1
+                "ContentPropagator": "VoxBox-TTS",  # 内容传播服务提供者名称
+                "PropagateID": propagate_id,  # 内容传播编号
+                "ReservedCode2": "",  # 预留字段2
+            }
+        }
+
+        # 将元数据转换为JSON字符串
+        aigc_json = json.dumps(aigc_metadata, ensure_ascii=False, separators=(",", ":"))
+
+        # 使用mutagen添加元数据到WAV文件
+        try:
+            audio_file = WAVE(wav_file_path)
+            if audio_file.tags is None:
+                audio_file.add_tags()
+
+            # 添加AIGC标识字段
+            audio_file.tags["AIGC_METADATA"] = aigc_json
+            audio_file.save()
+
+        except Exception as e:
+            # 如果mutagen失败，使用备用方法（直接修改WAV文件的INFO chunk）
+            _add_aigc_info_chunk(wav_file_path, aigc_json)
+
+    except ImportError:
+        # 如果没有mutagen库，使用备用方法
+        produce_id = str(uuid.uuid4())
+        propagate_id = produce_id
+
+        aigc_metadata = {
+            "AIGC": {
+                "Label": "1",
+                "ContentProducer": "VoxBox-TTS",
+                "ProduceID": produce_id,
+                "ReservedCode1": "",
+                "ContentPropagator": "VoxBox-TTS",
+                "PropagateID": propagate_id,
+                "ReservedCode2": "",
+            }
+        }
+
+        aigc_json = json.dumps(aigc_metadata, ensure_ascii=False, separators=(",", ":"))
+        _add_aigc_info_chunk(wav_file_path, aigc_json)
+
+
+def _add_aigc_info_chunk(wav_file_path: str, aigc_json: str):
+    """备用方法：直接在WAV文件中添加INFO chunk包含AIGC元数据"""
+    try:
+        # 读取原始WAV文件
+        with open(wav_file_path, "rb") as f:
+            wav_data = f.read()
+
+        # 检查是否为有效的WAV文件
+        if not wav_data.startswith(b"RIFF") or b"WAVE" not in wav_data[:12]:
+            return
+
+        # 准备AIGC INFO chunk
+        aigc_bytes = aigc_json.encode("utf-8")
+        # 确保chunk大小为偶数（WAV格式要求）
+        if len(aigc_bytes) % 2 == 1:
+            aigc_bytes += b"\x00"
+
+        # 创建INFO chunk
+        info_chunk = b"INFO" + len(aigc_bytes).to_bytes(4, "little") + aigc_bytes
+
+        # 在WAV文件末尾添加INFO chunk
+        # 首先需要更新RIFF chunk的大小
+        riff_size = int.from_bytes(wav_data[4:8], "little")
+        new_riff_size = riff_size + len(info_chunk)
+
+        # 构建新的WAV文件
+        new_wav_data = (
+            wav_data[:4]  # RIFF
+            + new_riff_size.to_bytes(4, "little")  # 新的文件大小
+            + wav_data[8:]  # 原始数据
+            + info_chunk  # AIGC INFO chunk
+        )
+
+        # 写入修改后的WAV文件
+        with open(wav_file_path, "wb") as f:
+            f.write(new_wav_data)
+
+    except Exception as e:
+        # 如果添加元数据失败，不影响音频文件的正常使用
+        print(f"Warning: Failed to add AIGC metadata to {wav_file_path}: {e}")
 
 
 class CosyVoice(TTSBackend):
@@ -141,8 +246,11 @@ class CosyVoice(TTSBackend):
                     )
                     wf.writeframes(tts_audio)
 
-                output_file_path = convert(wav_file_path, reponse_format, speed)
-                return output_file_path
+            # 添加AIGC合规元数据
+            add_aigc_metadata_to_wav(wav_file_path)
+
+            output_file_path = convert(wav_file_path, reponse_format, speed)
+            return output_file_path
 
     @log_method
     def speech_instruct(
@@ -169,6 +277,9 @@ class CosyVoice(TTSBackend):
                         (i["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
                     )
                     wf.writeframes(tts_audio)
+
+            # 添加AIGC合规元数据
+            add_aigc_metadata_to_wav(wav_file_path)
 
             output_file_path = convert(wav_file_path, response_format, speed)
             return output_file_path
@@ -225,7 +336,7 @@ class CosyVoice(TTSBackend):
         chunk_counter = 0  # 添加计数器用于文件编号
 
         def create_wav_chunk(audio_data):
-            """创建WAV格式的音频块，包含完整的WAV头"""
+            """创建WAV格式的音频块，包含完整的WAV头和AIGC元数据"""
             nonlocal chunk_counter
             chunk_counter += 1
 
@@ -238,6 +349,9 @@ class CosyVoice(TTSBackend):
                 wf.setsampwidth(sample_width)
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio_data)
+
+            # 添加AIGC合规元数据
+            add_aigc_metadata_to_wav(wav_file_path)
 
             # 转换格式
             if response_format != "wav":
@@ -285,7 +399,7 @@ class CosyVoice(TTSBackend):
         chunk_counter = 0  # 添加计数器用于文件编号
 
         def create_wav_chunk(audio_data):
-            """创建WAV格式的音频块，包含完整的WAV头"""
+            """创建WAV格式的音频块，包含完整的WAV头和AIGC元数据"""
             nonlocal chunk_counter
             chunk_counter += 1
 
@@ -298,6 +412,9 @@ class CosyVoice(TTSBackend):
                 wf.setsampwidth(sample_width)
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio_data)
+
+            # 添加AIGC合规元数据
+            add_aigc_metadata_to_wav(wav_file_path)
 
             # 转换格式
             if response_format != "wav":
