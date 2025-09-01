@@ -7,6 +7,7 @@ import tempfile
 import torch
 import json
 import uuid
+import struct
 from typing import Dict, List, Optional, Generator
 
 from vox_box.backends.tts.base import TTSBackend
@@ -27,6 +28,8 @@ builtin_spk2info_path = os.path.join(os.path.dirname(__file__), "cosyvoice_spk2i
 
 def add_aigc_metadata_to_wav(wav_file_path: str):
     """为WAV文件添加AIGC合规元数据"""
+    print(f"[AIGC] 开始为文件添加元数据: {os.path.basename(wav_file_path)}")
+
     try:
         import mutagen
         from mutagen.wave import WAVE
@@ -60,13 +63,17 @@ def add_aigc_metadata_to_wav(wav_file_path: str):
             # 添加AIGC标识字段
             audio_file.tags["AIGC_METADATA"] = aigc_json
             audio_file.save()
+            print(f"[AIGC] 使用mutagen成功添加元数据")
 
         except Exception as e:
             # 如果mutagen失败，使用备用方法（直接修改WAV文件的INFO chunk）
+            print(f"[AIGC] mutagen失败，使用备用方法: {e}")
             _add_aigc_info_chunk(wav_file_path, aigc_json)
+            print(f"[AIGC] 备用方法添加完成")
 
     except ImportError:
         # 如果没有mutagen库，使用备用方法
+        print(f"[AIGC] mutagen库不可用，使用备用方法")
         produce_id = str(uuid.uuid4())
         propagate_id = produce_id
 
@@ -84,48 +91,136 @@ def add_aigc_metadata_to_wav(wav_file_path: str):
 
         aigc_json = json.dumps(aigc_metadata, ensure_ascii=False, separators=(",", ":"))
         _add_aigc_info_chunk(wav_file_path, aigc_json)
+        print(f"[AIGC] 备用方法添加完成")
+
+    except Exception as e:
+        print(f"[AIGC] 添加元数据时发生错误: {e}")
+
+
+def check_and_print_aigc_metadata(wav_file_path: str):
+    """檢查並打印WAV文件中的AIGC元數據"""
+    try:
+        with open(wav_file_path, "rb") as f:
+            data = f.read()
+
+        # 檢查是否為有效的WAV文件
+        if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            print(f"警告: {wav_file_path} 不是有效的WAV文件")
+            return
+
+        # 查找INFO chunk中的AIGC數據
+        pos = 12
+        found_aigc = False
+
+        while pos < len(data) - 8:
+            chunk_id = data[pos : pos + 4]
+            chunk_size = struct.unpack("<I", data[pos + 4 : pos + 8])[0]
+
+            if chunk_id == b"LIST":
+                # 檢查是否為INFO LIST
+                list_type = data[pos + 8 : pos + 12]
+                if list_type == b"INFO":
+                    # 在INFO chunk中查找AIGC
+                    info_pos = pos + 12
+                    info_end = pos + 8 + chunk_size
+
+                    while info_pos < info_end - 8:
+                        info_chunk_id = data[info_pos : info_pos + 4]
+                        info_chunk_size = struct.unpack(
+                            "<I", data[info_pos + 4 : info_pos + 8]
+                        )[0]
+
+                        if info_chunk_id == b"AIGC":
+                            # 找到AIGC數據
+                            aigc_data = data[
+                                info_pos + 8 : info_pos + 8 + info_chunk_size
+                            ]
+                            # 移除可能的填充字節
+                            aigc_data = aigc_data.rstrip(b"\x00")
+
+                            try:
+                                aigc_json = aigc_data.decode("utf-8")
+                                aigc_metadata = json.loads(aigc_json)
+                                print(
+                                    f"=== AIGC元數據檢查 - {os.path.basename(wav_file_path)} ==="
+                                )
+                                print(f"原始JSON: {aigc_json}")
+                                print(
+                                    f"解析後數據: {json.dumps(aigc_metadata, ensure_ascii=False, indent=2)}"
+                                )
+                                found_aigc = True
+                            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                                print(f"警告: AIGC元數據解析失敗 - {e}")
+                                print(f"原始數據: {aigc_data}")
+                            break
+
+                        # 移動到下一個info chunk，考慮對齊
+                        info_pos += 8 + ((info_chunk_size + 1) // 2) * 2
+                    break
+
+            # 移動到下一個chunk，考慮對齊
+            pos += 8 + ((chunk_size + 1) // 2) * 2
+
+        if not found_aigc:
+            print(f"警告: 在 {os.path.basename(wav_file_path)} 中未找到AIGC元數據")
+
+    except Exception as e:
+        print(f"錯誤: 檢查AIGC元數據時發生異常 - {e}")
 
 
 def _add_aigc_info_chunk(wav_file_path: str, aigc_json: str):
-    """备用方法：直接在WAV文件中添加INFO chunk包含AIGC元数据"""
+    """备用方法：直接在WAV文件中添加LIST INFO chunk包含AIGC元数据"""
     try:
+        print(f"[AIGC] 使用备用方法添加元数据到: {os.path.basename(wav_file_path)}")
+
         # 读取原始WAV文件
         with open(wav_file_path, "rb") as f:
             wav_data = f.read()
 
         # 检查是否为有效的WAV文件
         if not wav_data.startswith(b"RIFF") or b"WAVE" not in wav_data[:12]:
+            print(f"[AIGC] 错误: 不是有效的WAV文件")
             return
 
-        # 准备AIGC INFO chunk
+        # 准备AIGC数据
         aigc_bytes = aigc_json.encode("utf-8")
         # 确保chunk大小为偶数（WAV格式要求）
         if len(aigc_bytes) % 2 == 1:
             aigc_bytes += b"\x00"
 
-        # 创建INFO chunk
-        info_chunk = b"INFO" + len(aigc_bytes).to_bytes(4, "little") + aigc_bytes
+        # 创建AIGC子chunk
+        aigc_chunk = b"AIGC" + len(aigc_bytes).to_bytes(4, "little") + aigc_bytes
 
-        # 在WAV文件末尾添加INFO chunk
+        # 创建LIST INFO chunk
+        info_content = b"INFO" + aigc_chunk
+        # 确保LIST chunk内容大小为偶数
+        if len(info_content) % 2 == 1:
+            info_content += b"\x00"
+
+        list_chunk = b"LIST" + len(info_content).to_bytes(4, "little") + info_content
+
+        # 在WAV文件末尾添加LIST chunk
         # 首先需要更新RIFF chunk的大小
         riff_size = int.from_bytes(wav_data[4:8], "little")
-        new_riff_size = riff_size + len(info_chunk)
+        new_riff_size = riff_size + len(list_chunk)
 
         # 构建新的WAV文件
         new_wav_data = (
             wav_data[:4]  # RIFF
             + new_riff_size.to_bytes(4, "little")  # 新的文件大小
             + wav_data[8:]  # 原始数据
-            + info_chunk  # AIGC INFO chunk
+            + list_chunk  # LIST INFO chunk
         )
 
         # 写入修改后的WAV文件
         with open(wav_file_path, "wb") as f:
             f.write(new_wav_data)
 
+        print(f"[AIGC] 成功添加LIST INFO chunk，大小: {len(list_chunk)} 字节")
+
     except Exception as e:
         # 如果添加元数据失败，不影响音频文件的正常使用
-        print(f"Warning: Failed to add AIGC metadata to {wav_file_path}: {e}")
+        print(f"[AIGC] 备用方法失败: {e}")
 
 
 class CosyVoice(TTSBackend):
@@ -249,6 +344,9 @@ class CosyVoice(TTSBackend):
             # 添加AIGC合规元数据
             add_aigc_metadata_to_wav(wav_file_path)
 
+            # 檢查並打印AIGC元數據
+            check_and_print_aigc_metadata(wav_file_path)
+
             output_file_path = convert(wav_file_path, reponse_format, speed)
             return output_file_path
 
@@ -281,6 +379,9 @@ class CosyVoice(TTSBackend):
             # 添加AIGC合规元数据
             add_aigc_metadata_to_wav(wav_file_path)
 
+            # 檢查並打印AIGC元數據
+            check_and_print_aigc_metadata(wav_file_path)
+
             output_file_path = convert(wav_file_path, response_format, speed)
             return output_file_path
 
@@ -309,6 +410,12 @@ class CosyVoice(TTSBackend):
                         (i["tts_speech"].numpy() * (2**15)).astype(np.int16).tobytes()
                     )
                     wf.writeframes(tts_audio)
+
+            # 添加AIGC合规元数据
+            add_aigc_metadata_to_wav(wav_file_path)
+
+            # 檢查並打印AIGC元數據
+            check_and_print_aigc_metadata(wav_file_path)
 
             output_file_path = convert(wav_file_path, response_format, speed)
             return output_file_path
@@ -352,6 +459,9 @@ class CosyVoice(TTSBackend):
 
             # 添加AIGC合规元数据
             add_aigc_metadata_to_wav(wav_file_path)
+
+            # 檢查並打印AIGC元數據
+            check_and_print_aigc_metadata(wav_file_path)
 
             # 转换格式
             if response_format != "wav":
@@ -415,6 +525,9 @@ class CosyVoice(TTSBackend):
 
             # 添加AIGC合规元数据
             add_aigc_metadata_to_wav(wav_file_path)
+
+            # 檢查並打印AIGC元數據
+            check_and_print_aigc_metadata(wav_file_path)
 
             # 转换格式
             if response_format != "wav":
